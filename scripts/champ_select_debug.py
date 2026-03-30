@@ -1,12 +1,12 @@
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
 
-def build_url(allies, enemies, bans):
-    params = ["user-role=support", "rank-range=all", "recommendation-method=classic"]
+def build_url(allies, enemies, bans, rank_range="all"):
+    params = [f"user-role=support", f"rank-range={rank_range}", "recommendation-method=classic"]
     for name, role in allies:
         params.append(f"ally={name}-{role}")
     for e in enemies:
@@ -15,17 +15,22 @@ def build_url(allies, enemies, bans):
         params.append(f"ban={b}")
     return "https://loltheory.gg/lol/team-comp-analyzer/solo-queue?" + "&".join(params)
 
+def create_driver():
+    options = webdriver.ChromeOptions()
+    options.add_argument('--headless=new')
+    options.add_argument('--disable-gpu')
+    options.add_argument('--log-level=3')
+    return webdriver.Chrome(options=options)
+
 def scrape_winrate(driver, url):
-    print(f"\nURL: {url}\n")
     driver.get(url)
     try:
-        def winrate_loaded(driver):
-            els = driver.find_elements(By.CSS_SELECTOR, ".champion-column.win-rate.font-number")
+        def winrate_loaded(d):
+            els = d.find_elements(By.CSS_SELECTOR, ".champion-column.win-rate.font-number")
             for el in els:
                 if '%' in el.text:
                     return el
             return False
-
         el = WebDriverWait(driver, 20).until(winrate_loaded)
         return el.text.strip()
     except:
@@ -34,6 +39,23 @@ def scrape_winrate(driver, url):
         print(src[:3000])
         print("--- END ---")
         return "N/A"
+
+OFFSETS = {
+    "WITH you    [All]":    50.34,
+    "WITHOUT you [All]":    50.34,
+    "WITH you    [Silver]": 50.62,
+    "WITHOUT you [Silver]": 50.62,
+}
+
+def format_result(label, wr_str):
+    offset = OFFSETS[label]
+    median = (50.0 + offset) / 2.0
+    try:
+        wr = float(wr_str.replace('%', ''))
+        verdict = "PLAY THIS GAME!" if wr >= median else "DODGE THIS GAME!"
+        return f"  {label}: {wr_str} | Offset: {offset:.2f}% | Median: {median:.2f}% | {verdict}"
+    except ValueError:
+        return f"  {label}: {wr_str} | Offset: {offset:.2f}% | Median: {median:.2f}% | N/A"
 
 def ask_list(prompt):
     raw = input(prompt).strip()
@@ -56,7 +78,7 @@ def main():
         if len(parts) == 2:
             allies.append((parts[0], parts[1]))
         else:
-            print(f"  WARNING: skipping '{a}' — expected format champ-role")
+            print(f"  WARNING: skipping '{a}' - expected format champ-role")
 
     my_pick = input("Your support pick (e.g. yuumi): ").strip().lower()
 
@@ -66,36 +88,37 @@ def main():
     allies_with_me = allies + [(my_pick, 'support')] if my_pick else allies
     allies_without_me = allies
 
-    url_with = build_url(allies_with_me, enemies, bans)
-    url_without = build_url(allies_without_me, enemies, bans)
+    urls = [
+        build_url(allies_with_me, enemies, bans, rank_range="all"),
+        build_url(allies_without_me, enemies, bans, rank_range="all"),
+        build_url(allies_with_me, enemies, bans, rank_range="silver"),
+        build_url(allies_without_me, enemies, bans, rank_range="silver"),
+    ]
+    labels = [
+        "WITH you    [All]",
+        "WITHOUT you [All]",
+        "WITH you    [Silver]",
+        "WITHOUT you [Silver]",
+    ]
 
-    print("\n--- URL WITH support ---")
-    print(url_with)
-    print("\n--- URL WITHOUT support ---")
-    print(url_without)
+    for label, url in zip(labels, urls):
+        print(f"\n{label}:\n  {url}")
 
-    print("\nStarting Chrome (headless)...")
-    options = webdriver.ChromeOptions()
-    options.add_argument('--headless=new')
-    options.add_argument('--disable-gpu')
-    options.add_argument('--log-level=3')
-    driver = webdriver.Chrome(options=options)
+    print("\nStarting 4 Chrome instances (headless)...")
+    drivers = [create_driver() for _ in range(4)]
 
     try:
-        print("\n>>> Scraping WITH support...")
-        wr_with = scrape_winrate(driver, url_with)
-        print(f"Result: {wr_with}")
+        print("Scraping all 4 URLs in parallel...")
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            results = list(pool.map(scrape_winrate, drivers, urls))
 
-        print("\n>>> Scraping WITHOUT support...")
-        wr_without = scrape_winrate(driver, url_without)
-        print(f"Result: {wr_without}")
-
-        print(f"\n{'='*30}")
-        print(f"  WITH you:    {wr_with}")
-        print(f"  WITHOUT you: {wr_without}")
-        print(f"{'='*30}")
+        print(f"\n{'='*80}")
+        for label, wr in zip(labels, results):
+            print(format_result(label, wr))
+        print(f"{'='*80}")
     finally:
-        driver.quit()
+        for d in drivers:
+            d.quit()
 
 if __name__ == "__main__":
     main()
