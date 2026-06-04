@@ -126,7 +126,7 @@ def scrape_winrate(driver, url):
                 if '%' in el.text:
                     return el
             return False
-        el = WebDriverWait(driver, 20).until(winrate_loaded)
+        el = WebDriverWait(driver, 25).until(winrate_loaded)
         return el.text.strip()
     except:
         return "N/A"
@@ -172,8 +172,14 @@ def main():
     last_comp = None
     last_status = None
     fail_count = 0
-    drivers = None
     in_champ_select = False
+
+    print("Pre-launching 4 headless browsers (one-time cost)...")
+    drivers = [create_driver() for _ in range(4)]
+    # Warm each driver by loading loltheory once so DNS/TLS/JS is cached
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        list(pool.map(lambda d: d.get("https://loltheory.gg"), drivers))
+    print("Browsers ready.")
     print("Waiting for champ select...\n")
 
     try:
@@ -225,9 +231,6 @@ def main():
                     print("BANS:", ", ".join(bans))
                     print("\nFetching winrates from loltheory.gg (4 threads)...\n")
 
-                    if drivers is None:
-                        drivers = [create_driver() for _ in range(4)]
-
                     urls = [
                         build_url(allies, enemies, bans, include_me=True, rank_range="all"),
                         build_url(allies, enemies, bans, include_me=False, rank_range="all"),
@@ -254,10 +257,13 @@ def main():
                     print("ALLIES:", ", ".join(f"{a['name']} ({a['role']})" for a in allies))
                     print("ENEMIES:", ", ".join(enemies))
                     print()
-                    for label, wr in zip(labels, results):
-                        print(format_result(label, wr))
+                    for label, wr in zip(labels, results):cha
+                    print(format_result(label, wr))
+                    print("\nURLs fetched:")
+                    for label, url in zip(labels, urls):
+                        print(f"  {label}: {url}") 
                     print("\nPolling for changes...")
-            time.sleep(3)
+            time.sleep(1)
     except KeyboardInterrupt:
         pass
     finally:
